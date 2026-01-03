@@ -176,7 +176,7 @@ import {
 } from "ionicons/icons";
 import { mapGetters, useStore } from 'vuex'
 import { useRouter } from 'vue-router'
-import { copyToClipboard, showToast } from '@/utils'
+import { copyToClipboard, showToast, actionLoadingStateManager } from '@/utils'
 import { DateTime } from 'luxon';
 import emitter from "@/event-bus"
 import { hasError } from '@/adapter';
@@ -401,22 +401,39 @@ export default defineComponent({
       }
     },
     async deliverShipment (order: any) {
-      await this.store.dispatch('order/deliverShipment', order)
-      .then((resp) => {
-        if(!hasError(resp)) {
-          showToast(translate('Order delivered to', {customerName: order.customerName}))
-          // We are collecting the product IDs of the order items and then fetching stock information
-          // for each product ID if it is available for updated inventory.
-          const productIds = [...new Set(order.items.map((item: any) => item.productId))];
+      const actionKey = `DELIVER_SHIPMENT_${order.shipmentId}`;
+      
+      // Check if already processing
+      if (actionLoadingStateManager.isLoading(actionKey)) {
+        return;
+      }
 
-          productIds.map((productId: any) => {
-            const productStock = this.getInventoryInformation(productId);
-            if (productStock && productStock.quantityOnHand >= 0) {
-              this.store.dispatch('stock/fetchProductInventory', { productId, forceFetchStock: true });
+      try {
+        await actionLoadingStateManager.executeWithLoading(actionKey, async () => {
+          await this.store.dispatch('order/deliverShipment', order)
+          .then((resp) => {
+            if(!hasError(resp)) {
+              showToast(translate('Order delivered to', {customerName: order.customerName}))
+              // We are collecting the product IDs of the order items and then fetching stock information
+              // for each product ID if it is available for updated inventory.
+              const productIds = [...new Set(order.items.map((item: any) => item.productId))];
+
+              productIds.map((productId: any) => {
+                const productStock = this.getInventoryInformation(productId);
+                if (productStock && productStock.quantityOnHand >= 0) {
+                  this.store.dispatch('stock/fetchProductInventory', { productId, forceFetchStock: true });
+                }
+              })
             }
           })
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('already in progress')) {
+          logger.debug('Deliver shipment action already in progress');
+        } else {
+          logger.error(err);
         }
-      })
+      }
     },
     segmentChanged (e: CustomEvent) {
       this.queryString = ''
@@ -485,42 +502,59 @@ export default defineComponent({
       this.$router.push({ path: '/notifications' })
     },
     async printPicklist(order: any, shipGroup: any) {
-      if(shipGroup.picklistId) {
-        await OrderService.printPicklist(shipGroup.picklistId)
+      const actionKey = `PRINT_PICKLIST_${order.orderId}_${shipGroup.shipGroupSeqId}`;
+      
+      // Check if already processing
+      if (actionLoadingStateManager.isLoading(actionKey)) {
         return;
       }
 
-      if(!this.getBopisProductStoreSettings('ENABLE_TRACKING')) {
-        try {
-          const resp = await UserService.ensurePartyRole({
-            partyId: "_NA_",
-            roleTypeId: "WAREHOUSE_PICKER",
+      try {
+        await actionLoadingStateManager.executeWithLoading(actionKey, async () => {
+          if(shipGroup.picklistId) {
+            await OrderService.printPicklist(shipGroup.picklistId)
+            return;
+          }
+
+          if(!this.getBopisProductStoreSettings('ENABLE_TRACKING')) {
+            try {
+              const resp = await UserService.ensurePartyRole({
+                partyId: "_NA_",
+                roleTypeId: "WAREHOUSE_PICKER",
+              })
+
+              if(hasError(resp)) {
+                throw resp.data;
+              }
+            } catch (error) {
+              showToast(translate("Something went wrong. Picklist can not be created."));
+              logger.error(error)
+              return;
+            }
+            await this.createPicklist(order, "_NA_");
+            return;
+          }
+
+          const assignPickerModal = await modalController.create({
+            component: AssignPickerModal,
+            componentProps: { order, shipGroup, facilityId: this.currentFacility.facilityId }
+          });
+
+          assignPickerModal.onDidDismiss().then(async(result: any) => {
+            if(result.data?.selectedPicker) {
+              this.createPicklist(order, result.data.selectedPicker)
+            }
           })
 
-          if(hasError(resp)) {
-            throw resp.data;
-          }
-        } catch (error) {
-          showToast(translate("Something went wrong. Picklist can not be created."));
-          logger.error(error)
-          return;
+          return assignPickerModal.present();
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('already in progress')) {
+          logger.debug('Print picklist action already in progress');
+        } else {
+          logger.error(err);
         }
-        await this.createPicklist(order, "_NA_");
-        return;
       }
-
-      const assignPickerModal = await modalController.create({
-        component: AssignPickerModal,
-        componentProps: { order, shipGroup, facilityId: this.currentFacility.facilityId }
-      });
-
-      assignPickerModal.onDidDismiss().then(async(result: any) => {
-        if(result.data?.selectedPicker) {
-          this.createPicklist(order, result.data.selectedPicker)
-        }
-      })
-
-      return assignPickerModal.present();
     },
     async createPicklist(order: any, selectedPicker: any) {
       let resp: any;

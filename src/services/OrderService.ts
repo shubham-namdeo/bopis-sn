@@ -1,7 +1,7 @@
 import { api, apiClient, hasError } from '@/adapter';
 import { translate } from '@hotwax/dxp-components';
 import store from '@/store';
-import { getCurrentFacilityId, showToast } from '@/utils';
+import { getCurrentFacilityId, showToast, requestDeduplicator } from '@/utils';
 import logger from '@/logger';
 import { cogOutline } from 'ionicons/icons';
 import { UtilService } from "@/services/UtilService";
@@ -92,11 +92,14 @@ const findCompletedShipments = async (params:any): Promise <any>  => {
 }
 
 const rejectOrderItems = async (payload: any): Promise <any> => {
-  return api({
-    url: "poorti/rejectOrderItems",
-    method: "post",
-    data: payload
-  });
+  const key = `REJECT_ORDER_ITEMS_${payload.shipmentId || 'default'}`;
+  return requestDeduplicator.executeOnce(key, () => 
+    api({
+      url: "poorti/rejectOrderItems",
+      method: "post",
+      data: payload
+    })
+  );
 }
 
 const createPicklist = async (payload: any): Promise <any> => {
@@ -188,21 +191,27 @@ const sendPickupScheduledNotification = async (payload: any): Promise <any> => {
     "emailType": "READY_FOR_PICKUP",
     ...payload
   }
-  return api({
-    url: "oms/orders/pickupScheduledNotification",
-    method: "post",
-    data: payload
-  });
+  const key = `SEND_NOTIFICATION_${payload.orderId}`;
+  return requestDeduplicator.executeOnce(key, () =>
+    api({
+      url: "oms/orders/pickupScheduledNotification",
+      method: "post",
+      data: payload
+    })
+  );
 }
 
 const handoverShipToStoreOrder = async (shipmentId: string): Promise<any> => {
-  return api({
-    url: `/poorti/shipments/${shipmentId}`,
-    method: 'PUT',
-    data: {
-      statusId : 'SHIPMENT_DELIVERED', 
-    }
-  });
+  const key = `HANDOVER_SHIP_TO_STORE_${shipmentId}`;
+  return requestDeduplicator.executeOnce(key, () =>
+    api({
+      url: `/poorti/shipments/${shipmentId}`,
+      method: 'PUT',
+      data: {
+        statusId : 'SHIPMENT_DELIVERED', 
+      }
+    })
+  );
 }
 
 const convertToShipToStore = async (payload: any): Promise<any> => {
@@ -288,11 +297,14 @@ const packOrder = async (payload: any): Promise<any> => {
 }
 
 const shipOrder = async (payload: any): Promise<any> => {
-  return api({
-    url: `/poorti/shipments/${payload.shipmentId}/ship`,
-    method: "POST",
-    data: payload
-  });
+  const key = `SHIP_ORDER_${payload.shipmentId}`;
+  return requestDeduplicator.executeOnce(key, () =>
+    api({
+      url: `/poorti/shipments/${payload.shipmentId}/ship`,
+      method: "POST",
+      data: payload
+    })
+  );
 }
 
 const performFind = async (payload: any): Promise<any> => {
@@ -311,11 +323,14 @@ const performFind = async (payload: any): Promise<any> => {
 }
 
 const cancelOrder = async (payload: any): Promise<any> => {
-  return api({
-    url: `oms/orders/${payload.orderId}/items/cancel`,
-    method: "post",
-    data: payload
-  });
+  const key = `CANCEL_ORDER_${payload.orderId}`;
+  return requestDeduplicator.executeOnce(key, () =>
+    api({
+      url: `oms/orders/${payload.orderId}/items/cancel`,
+      method: "post",
+      data: payload
+    })
+  );
 }
 
 const updateGiftCardActivationDetails = (item: any, giftCardActivationInfo: any, orderId?: string) => {

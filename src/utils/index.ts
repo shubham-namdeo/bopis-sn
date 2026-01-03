@@ -120,3 +120,5 @@ const getPickerName = (pickerGroupName: string, pickerFirstName: string, pickerL
 }
 
 export { copyToClipboard, getCurrentTime, showToast, hasWebcamAccess, getFeature, formatPhoneNumber, getCurrentFacilityId, getColorByDesc, formatCurrency, getPickerName }
+export { requestDeduplicator } from './requestDeduplicator'
+export { actionLoadingStateManager } from './actionLoadingState'

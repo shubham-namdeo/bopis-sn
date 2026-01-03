@@ -130,7 +130,7 @@ import ProductListItem from '@/components/ProductListItem.vue'
 import { mailOutline } from "ionicons/icons";
 import { mapGetters, useStore } from 'vuex'
 import { useRouter } from 'vue-router'
-import { copyToClipboard, showToast } from '@/utils'
+import { copyToClipboard, showToast, actionLoadingStateManager } from '@/utils'
 import { hasError } from '@/adapter'
 import { DateTime } from 'luxon';
 import emitter from "@/event-bus"
@@ -353,40 +353,43 @@ export default defineComponent({
       return alert.present();
     },
   async handoverOrder(shipmentId: string) {
-    emitter.emit("presentLoader");
-  
-    try {
-      const resp = await OrderService.handoverShipToStoreOrder(shipmentId);
-      
-      if (!hasError(resp)) {
-        this.getReadyForPickupOrders(); // Refresh
-        showToast(translate('Order handed over successfully'));
-      } else {
-        showToast(translate("Failed to handover order"));
-        logger.error("Handover failed", resp);
-      }
-      
-    } catch (err) {
-      logger.error(err);
-      showToast(translate("Something went wrong"));
+    const actionKey = `HANDOVER_SHIP_TO_STORE_${shipmentId}`;
+    
+    // Check if already processing
+    if (actionLoadingStateManager.isLoading(actionKey)) {
+      return;
     }
+
     try {
-      const resp = await OrderService.handoverShipToStoreOrder(shipmentId);
-      
-      if (!hasError(resp)) {
-        this.getReadyForPickupOrders(); // Refresh
-        showToast(translate('Order handed over successfully'));
-      } else {
-        showToast(translate("Failed to handover order"));
-        logger.error("Handover failed", resp);
-      }
-      
+      await actionLoadingStateManager.executeWithLoading(actionKey, async () => {
+        emitter.emit("presentLoader");
+
+        try {
+          const resp = await OrderService.handoverShipToStoreOrder(shipmentId);
+          
+          if (!hasError(resp)) {
+            this.getReadyForPickupOrders(); // Refresh
+            showToast(translate('Order handed over successfully'));
+          } else {
+            showToast(translate("Failed to handover order"));
+            logger.error("Handover failed", resp);
+          }
+          
+        } catch (err) {
+          logger.error(err);
+          showToast(translate("Something went wrong"));
+        } finally {
+          emitter.emit("dismissLoader");
+        }
+      });
     } catch (err) {
-      logger.error(err);
-      showToast(translate("Something went wrong"));
+      if (err instanceof Error && err.message.includes('already in progress')) {
+        logger.debug('Handover order action already in progress');
+      } else {
+        logger.error(err);
+      }
     }
-  emitter.emit("dismissLoader");
-},
+  },
 
     async sendReadyForPickupEmail(order: any) {
       const header = translate('Resend email')

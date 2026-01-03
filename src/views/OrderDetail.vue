@@ -403,7 +403,7 @@ import { Actions, hasPermission } from '@/authorization'
 import OrderItemRejHistoryModal from '@/components/OrderItemRejHistoryModal.vue';
 import AssignPickerModal from "@/views/AssignPickerModal.vue";
 import EditPickerModal from "@/components/EditPickerModal.vue";
-import { copyToClipboard, formatCurrency, formatPhoneNumber, getColorByDesc, getCurrentFacilityId, getFeature, showToast } from '@/utils'
+import { copyToClipboard, formatCurrency, formatPhoneNumber, getColorByDesc, getCurrentFacilityId, getFeature, showToast, actionLoadingStateManager } from '@/utils'
 import { DateTime } from "luxon";
 import { hasError } from '@/adapter';
 import { OrderService } from "@/services/OrderService";
@@ -560,63 +560,81 @@ export default defineComponent({
       await this.store.dispatch("order/getOrderDetail", { payload, orderType })
     },
     async rejectOrder() {
-      emitter.emit("presentLoader");
-
-      let order = JSON.parse(JSON.stringify(this.order))
-      const isEntireOrderRejection = this.isEntireOrderRejectionEnabled();
-      const rejectToFacilityId = order.shipGroup.shipmentMethodTypeId === "STOREPICKUP" ? "PICKUP_REJECTED" : "REJECTED_ITM_PARKING";
-      const itemsToReject: any[] = [];
+      const actionKey = `REJECT_ORDER_${this.order.orderId}`;
       
-      for (const item of order.shipGroup.items) {
-        const shouldReject = isEntireOrderRejection || item.rejectReason;
-
-        if (shouldReject) {
-          itemsToReject.push({
-            orderItemSeqId: item.orderItemSeqId,
-            quantity: parseInt(item.quantity),
-            maySplit: 'Y',
-            updateQOH: false, // Could be true if QOH needs to be updated on rejection
-            rejectionReasonId: item.rejectReason || this.rejectEntireOrderReasonId,
-            kitComponents: isKit(item) ? item.rejectedComponents || [] : []
-          });
-        }
+      // Check if already processing
+      if (actionLoadingStateManager.isLoading(actionKey)) {
+        return;
       }
-      if (itemsToReject.length > 0) {
-        const payload = {
-          orderId: order.orderId,
-          rejectToFacilityId,
-          items: itemsToReject
-        };
-        try {
-          const resp = await OrderService.rejectOrderItems(payload);
 
-          if (!hasError(resp)) {
-            // Remove rejected items from the shipGroup.items
-            const rejectedSeqIds = new Set(itemsToReject.map(i => i.orderItemSeqId));
-            order.shipGroup.items = order.shipGroup.items.filter(
-              (item: any) => !rejectedSeqIds.has(item.orderItemSeqId)
-            );
-            
-            const toastMessage = order.shipGroup.items.length === 0 ? translate('All items were rejected from the order.', { orderId: order.orderName ?? order.orderId }) : translate('Some items were rejected from the order.', { orderId: order.orderName ?? order.orderId });
-            showToast(toastMessage);
+      try {
+        await actionLoadingStateManager.executeWithLoading(actionKey, async () => {
+          emitter.emit("presentLoader");
+
+          let order = JSON.parse(JSON.stringify(this.order))
+          const isEntireOrderRejection = this.isEntireOrderRejectionEnabled();
+          const rejectToFacilityId = order.shipGroup.shipmentMethodTypeId === "STOREPICKUP" ? "PICKUP_REJECTED" : "REJECTED_ITM_PARKING";
+          const itemsToReject: any[] = [];
+          
+          for (const item of order.shipGroup.items) {
+            const shouldReject = isEntireOrderRejection || item.rejectReason;
+
+            if (shouldReject) {
+              itemsToReject.push({
+                orderItemSeqId: item.orderItemSeqId,
+                quantity: parseInt(item.quantity),
+                maySplit: 'Y',
+                updateQOH: false, // Could be true if QOH needs to be updated on rejection
+                rejectionReasonId: item.rejectReason || this.rejectEntireOrderReasonId,
+                kitComponents: isKit(item) ? item.rejectedComponents || [] : []
+              });
+            }
           }
-        } catch (err) {
-          logger.error("Something went wrong while rejecting order items:", err);
+          if (itemsToReject.length > 0) {
+            const payload = {
+              orderId: order.orderId,
+              rejectToFacilityId,
+              items: itemsToReject
+            };
+            try {
+              const resp = await OrderService.rejectOrderItems(payload);
+
+              if (!hasError(resp)) {
+                // Remove rejected items from the shipGroup.items
+                const rejectedSeqIds = new Set(itemsToReject.map(i => i.orderItemSeqId));
+                order.shipGroup.items = order.shipGroup.items.filter(
+                  (item: any) => !rejectedSeqIds.has(item.orderItemSeqId)
+                );
+                
+                const toastMessage = order.shipGroup.items.length === 0 ? translate('All items were rejected from the order.', { orderId: order.orderName ?? order.orderId }) : translate('Some items were rejected from the order.', { orderId: order.orderName ?? order.orderId });
+                showToast(toastMessage);
+              }
+            } catch (err) {
+              logger.error("Something went wrong while rejecting order items:", err);
+            }
+          }
+
+          // If all the items are rejected then marking the whole order as rejected
+          if(!order.shipGroup.items.length) order.rejected = true;
+
+          await this.store.dispatch("order/updateCurrent", { order });
+          this.hasRejectedItems = this.order.shipGroup.items.some((item: any) => item.rejectReason);
+
+          // We are only preparing the complete timeline for the store pickup order
+          if(this.order.shipGroup?.shipmentMethodTypeId === "STOREPICKUP") {
+            this.prepareOrderTimeline();
+          }
+
+          emitter.emit("dismissLoader");
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('already in progress')) {
+          // Silently ignore duplicate click attempts
+          logger.debug('Reject order action already in progress');
+        } else {
+          logger.error(err);
         }
       }
-
-      // If all the items are rejected then marking the whole order as rejected
-      if(!order.shipGroup.items.length) order.rejected = true;
-
-      await this.store.dispatch("order/updateCurrent", { order });
-      this.hasRejectedItems = this.order.shipGroup.items.some((item: any) => item.rejectReason);
-
-      // We are only preparing the complete timeline for the store pickup order
-      if(this.order.shipGroup?.shipmentMethodTypeId === "STOREPICKUP") {
-        this.prepareOrderTimeline();
-      }
-
-      emitter.emit("dismissLoader");
     },
     async cancelOrder(order: any) {
       const cancelOrderConfirmModal = await modalController.create({
@@ -697,15 +715,25 @@ export default defineComponent({
       await this.store.dispatch('util/fetchCancelReasons');
     },
     async printPackingSlip(order: any) {
-      // if the request to print packing slip is not yet completed, then clicking multiple times on the button
-      // should not do anything
-      if(order.isGeneratingPackingSlip) {
+      const actionKey = `PRINT_PACKING_SLIP_${order.shipGroup.shipmentId}`;
+      
+      // Use actionLoadingStateManager to prevent duplicate calls
+      if (actionLoadingStateManager.isLoading(actionKey)) {
         return;
       }
 
-      order.isGeneratingPackingSlip = true;
-      await OrderService.printPackingSlip([order.shipGroup.shipmentId]);
-      order.isGeneratingPackingSlip = false;
+      try {
+        await actionLoadingStateManager.executeWithLoading(actionKey, async () => {
+          await OrderService.printPackingSlip([order.shipGroup.shipmentId]);
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('already in progress')) {
+          // Silently ignore duplicate click attempts
+          logger.debug('Print packing slip action already in progress');
+        } else {
+          logger.error(err);
+        }
+      }
     },
     async printShippingLabelAndPackingSlip(order: any) {
       await OrderService.printShippingLabelAndPackingSlip(order.shipGroup.shipmentId)
@@ -1245,16 +1273,30 @@ export default defineComponent({
           },{
             text: translate("Send"),
             handler: async () => {
+              const actionKey = `SEND_EMAIL_${order.shipmentId}`;
+              
+              // Check if already sending
+              if (actionLoadingStateManager.isLoading(actionKey)) {
+                return;
+              }
+
               try {
-                const resp = await OrderService.sendPickupScheduledNotification({ shipmentId: order.shipmentId });
-                if (!hasError(resp)) {
-                  showToast(translate("Email sent successfully"))
+                await actionLoadingStateManager.executeWithLoading(actionKey, async () => {
+                  const resp = await OrderService.sendPickupScheduledNotification({ shipmentId: order.shipmentId });
+                  if (!hasError(resp)) {
+                    showToast(translate("Email sent successfully"))
+                  } else {
+                    showToast(translate("Something went wrong while sending the email."))
+                  }
+                });
+              } catch (error) {
+                if (error instanceof Error && error.message.includes('already in progress')) {
+                  // Silently ignore duplicate attempts
+                  logger.debug('Send email action already in progress');
                 } else {
                   showToast(translate("Something went wrong while sending the email."))
+                  logger.error(error)
                 }
-              } catch (error) {
-                showToast(translate("Something went wrong while sending the email."))
-                logger.error(error)
               }
             }
           }]
