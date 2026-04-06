@@ -3,9 +3,8 @@
 
 name: Deploy to Firebase Hosting on release
 'on':
-  push:
-    tags:        
-      - '*' # Push events to every tag not containing / Refer https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#patterns-to-match-branches-and-tags
+  schedule:
+    - cron: '0 0 1 * *'
 jobs:
   call-workflow-in-another-repo:
     uses: hotwax/dxp-components/.github/workflows/common-firebase-hosting-release.yml@main

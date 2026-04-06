@@ -2,27 +2,9 @@ name: Playwright Automation
 
 on:
   schedule:
-    # Run every day at 4:30 AM UTC
-    - cron: '30 4 * * *'
+    # Run once a month at midnight UTC on the 1st
+    - cron: '0 0 1 * *'
   workflow_dispatch:
-    inputs:
-      oms_name:
-        description: 'OMS on which test needs to run, default is dev-oms'
-        required: false
-        type: string
-      username:
-        description: 'Username used for login, ci.test'
-        required: false
-        type: string
-      password:
-        description: 'Password for login, if username is provided then this value is required'
-        required: false
-        type: string
-  push: 
-    tags:
-      - "*"
-    branches:
-      - "main"
 
 jobs:
   playwright-tests:
